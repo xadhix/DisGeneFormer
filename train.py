@@ -245,15 +245,15 @@ def main(cfg):
     all_genes = list(gene_id_index_feature_mapping.keys())
     all_diseases = list(disease_id_index_feature_mapping.keys())
 
-    positives = pd.read_csv(cfg.data.train_positives_path, sep='\t', names=['EntrezGene ID', 'OMIM ID', 'y'])
+    positives = pd.read_csv(cfg.data.train_positives_path, sep='\t', names=['EntrezGene ID', 'disease_id', 'y'])
     positives['EntrezGene ID'] = positives['EntrezGene ID'].astype(int)
 
     print(f"Number of positive associations in {cfg.data.train_positives_path}: {len(positives)}")
 
     positives = positives[
-        positives["OMIM ID"].isin(all_diseases) & positives["EntrezGene ID"].isin(all_genes)
+        positives["disease_id"].isin(all_diseases) & positives["EntrezGene ID"].isin(all_genes)
         ]
-    covered_diseases = sorted(set(positives['OMIM ID']))
+    covered_diseases = sorted(set(positives['disease_id']))
     covered_genes = sorted(set(positives['EntrezGene ID']))
 
     print(f"all genes: {len(covered_genes)}")
@@ -264,13 +264,13 @@ def main(cfg):
     def build_negatives_fast(positives_df, all_genes, rng=np.random.default_rng(train_seed)):
         """Return a DataFrame with exactly |positives_df| negatives."""
         # A hash-set gives O(1) look-ups instead of scanning a DataFrame
-        pos_set = sorted(set(map(tuple, positives_df[['OMIM ID', 'EntrezGene ID']].to_numpy())))
-        covered_diseases = sorted(positives_df['OMIM ID'].unique())
+        pos_set = sorted(set(map(tuple, positives_df[['disease_id', 'EntrezGene ID']].to_numpy())))
+        covered_diseases = sorted(positives_df['disease_id'].unique())
 
         # Precompute, for every disease, the genes that are *not* positives
         pos_by_disease = (
             positives_df
-            .groupby('OMIM ID')['EntrezGene ID']
+            .groupby('disease_id')['EntrezGene ID']
             .apply(set)
             .to_dict()
         )
@@ -285,29 +285,29 @@ def main(cfg):
             sampled = rng.choice(candidates, size=k, replace=False)
             negatives.extend([(disease, g) for g in sampled])
 
-        return pd.DataFrame(negatives, columns=['OMIM ID', 'EntrezGene ID'])
+        return pd.DataFrame(negatives, columns=['disease_id', 'EntrezGene ID'])
     
     # print(f"Random path for negatives: {cfg.data.train_negatives_path}")
     if cfg.data.train_negatives_path == 'random':
         print("Generating random negatives.")
         negatives = build_negatives_fast(positives, all_genes)
     else:
-        negatives = pd.read_csv(cfg.data.train_negatives_path, sep='\t', names=['EntrezGene ID', 'OMIM ID'], dtype={'EntrezGene ID': pd.Int64Dtype()})
+        negatives = pd.read_csv(cfg.data.train_negatives_path, sep='\t', names=['EntrezGene ID', 'disease_id'], dtype={'EntrezGene ID': pd.Int64Dtype()})
 
     def get_training_data_from_indexes(indexes, monogenetic_disease_only=False, multigenetic_diseases_only=False):
         # train_tuples = set()
         train_tuples = []
         for idx in indexes:
-            pos = positives[positives['OMIM ID'] == covered_diseases[idx]]
-            neg = negatives[negatives['OMIM ID'] == covered_diseases[idx]]
+            pos = positives[positives['disease_id'] == covered_diseases[idx]]
+            neg = negatives[negatives['disease_id'] == covered_diseases[idx]]
             if monogenetic_disease_only and len(pos) != 1:
                 continue
             if multigenetic_diseases_only and len(pos) == 1:
                 continue
             for index, row in pos.iterrows():
-                train_tuples.append((row['OMIM ID'], row['EntrezGene ID'], 1))
+                train_tuples.append((row['disease_id'], row['EntrezGene ID'], 1))
             for index, row in neg.iterrows():
-                train_tuples.append((row['OMIM ID'], row['EntrezGene ID'], 0))
+                train_tuples.append((row['disease_id'], row['EntrezGene ID'], 0))
 
         train_tuples = sorted(train_tuples)
 
@@ -317,9 +317,9 @@ def main(cfg):
         # Use float32 if using BCEWithLogits else use long for custom focal loss (CE)
         y_out = torch.ones((n,), dtype=torch.long)
 
-        for i, (omim_id, gene_id, s) in enumerate(train_tuples):
+        for i, (disease_id, gene_id, s) in enumerate(train_tuples):
             x_out[i, 0] = gene_id_index_feature_mapping[int(gene_id)]
-            x_out[i, 1] = disease_id_index_feature_mapping[omim_id]
+            x_out[i, 1] = disease_id_index_feature_mapping[disease_id]
             y_out[i] = s
         return x_out, y_out
 
@@ -482,9 +482,9 @@ def main(cfg):
         return model
 
 
-    disease_idx_to_omim_mapping = dict()
-    for omim_id, disease_idx in disease_id_index_feature_mapping.items():
-        disease_idx_to_omim_mapping[disease_idx] = omim_id
+    disease_idx_to_id_mapping = dict()
+    for disease_id, disease_idx in disease_id_index_feature_mapping.items():
+        disease_idx_to_id_mapping[disease_idx] = disease_id
 
     gene_idx_entrez_id_mapping = dict()
     for entrez_id, gene_idx in gene_id_index_feature_mapping.items():

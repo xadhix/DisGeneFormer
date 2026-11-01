@@ -40,7 +40,7 @@ GENE_HPO        = "data/gene_net/raw/gene_hpo_disease.tsv"
 
 RAW_OUTPUT       = "data/training/raw/all_hard_negatives.tsv"
 TRAIN_OUTPUT     = "data/training/train_hard_negatives.tsv"
-TEST_ASSOC       = "data/test/raw/all_omim_associations.tsv"
+TEST_ASSOC       = "data/test/raw/all_disgenet_associations.tsv"
 
 
 # ---------------------------------------------------------------------------
@@ -311,6 +311,23 @@ def load_pair_file(path: str, label: str) -> set:
     return pairs
 
 
+def load_disgenet_pairs(path: str, label: str) -> set:
+    """
+    Load (gene_id, disease CUI) pairs from a DisGeNET gene-disease associations
+    file: it has a header row, the gene id in column 0 and the disease CUI in
+    column 4. Returns a set of (gene, disease) tuples.
+    """
+    if not os.path.exists(path):
+        print(f"  [WARN] {label} file not found: {path}")
+        print(f"         No pairs will be excluded from this source.")
+        return set()
+
+    df = pd.read_csv(path, sep="\t")
+    pairs = set(zip(df.iloc[:, 0], df.iloc[:, 4]))
+    print(f"  Loaded {len(pairs):,} {label} pairs from {path}")
+    return pairs
+
+
 # ---------------------------------------------------------------------------
 #  Main
 # ---------------------------------------------------------------------------
@@ -357,7 +374,7 @@ def main():
 
     # Load test associations for exclusion (prevent leakage)
     print("\nLoading test associations...")
-    test_pairs = load_pair_file(args.test_associations, "test/eval")
+    test_pairs = load_disgenet_pairs(args.test_associations, "test/eval")
 
     # Stage 1: Build or load raw hard negatives
     raw_path = Path(args.raw_output)

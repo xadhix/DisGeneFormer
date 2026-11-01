@@ -4,9 +4,9 @@ create_results_table.py - Create combined results table from multiple methods
 Extracts metrics from all method subdirectories and combines into a single table.
 
 Usage:
-    python create_results_table.py results_root                          # Default: omim_prec at K=5,20,50
+    python create_results_table.py results_root                          # Default: disease_prec at K=5,20,50
     python create_results_table.py results_root --k-values 10 25 50 100  # Custom K values
-    python create_results_table.py results_root --metric omim_recall     # Different metric
+    python create_results_table.py results_root --metric disease_recall  # Different metric
     python create_results_table.py results_root --method-names names.json # Custom method names
 """
 
@@ -51,9 +51,8 @@ def parse_args():
     parser.add_argument(
         "--metric",
         type=str,
-        default="omim_prec",
-        choices=["omim_prec", "omim_recall", "omim_f1", "omim_tp",
-                 "disgenet_prec", "disgenet_recall", "disgenet_f1", "disgenet_tp"],
+        default="disease_prec",
+        choices=["disease_prec", "disease_recall", "disease_f1", "disease_tp"],
         help="Metric to extract"
     )
     parser.add_argument(

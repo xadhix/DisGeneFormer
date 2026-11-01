@@ -29,3 +29,5 @@ scripts/run_humannet_comparison.sh
 
 results/hard_negatives_ablation
 results/run_humannet_comparison_disease_specific
+
+.DS_Store

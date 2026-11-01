@@ -19,7 +19,7 @@ gene_net:
   skip_truncated_svd: True
   svd_components: 512
   svd_n_iter: 12
-  train_positives_path: 'data/training/train_human.tsv'
+  train_positives_path: 'data/training/train_disgenet_cui_train.tsv'
   train_negatives_path: 'data/training/train_hard_negatives.tsv'
   gda_edges: False
   raw_file_paths:
@@ -32,6 +32,7 @@ gene_net:
 disease_net:
   dataset_root: 'data/disease_net'
   features_to_use: '[phenotypes, pathways]'
+  id_prefixes: ['C']            # disease ids are UMLS CUIs; ['*'] admits every id
   edge_source: 'feature_similarity'
   perturb: False
   perturb_setting: 'random'
@@ -41,7 +42,7 @@ disease_net:
   svd_components: 512
   svd_n_iter: 12
   n_neighbors: 32 
-  train_positives_path: 'data/training/train_human.tsv'
+  train_positives_path: 'data/training/train_disgenet_cui_train.tsv'
   train_negatives_path: 'data/training/train_hard_negatives.tsv'
   gda_edges: False
   raw_file_paths:
@@ -50,7 +51,7 @@ disease_net:
     disease_publications: 'data/disease_net/raw/disease_publication_titles_and_abstracts.tsv'
     all_diseases: 'data/disease_net/raw/all_diseases.tsv'
 data:
-  train_positives_path: 'data/training/train_human.tsv'
+  train_positives_path: 'data/training/train_disgenet_cui_train.tsv'
   train_negatives_path: 'data/training/train_hard_negatives.tsv'
 train:
   n_folds: 5
@@ -67,15 +68,13 @@ train:
   grad_clip_max_norm: 5
   final_hidden_dim: 512
 evaluation:
-  eval_strategy: 'top_k' 
-  eval_single_omim: False 
-  test_sets: 'all' 
+  eval_strategy: 'top_k'
+  eval_single_disease: False
+  test_sets: 'all'
   plot_correlation: False
   plot_precision_recall: True
   top_k: '[5, 20, 50]'
   metrics: 'precision, recall, f1'
   test_path: 'data/test/disease_specific'
   eval_diseases: '[]'
-  umls_omim_mapping_path: 'data/test/UMLS_OMIM_map.tsv'
-  all_omim_associations_path: 'data/test/raw/all_omim_associations.tsv'
   all_disgenet_associations_path: 'data/test/raw/all_disgenet_associations.tsv'
