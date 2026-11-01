@@ -272,7 +272,9 @@ def run_inference_for_model(
     # Initialize model
     ablate_cfg = cfg.get('model', {}).get('ablate', {})
     ablate_dict = {k: bool(v) for k, v in ablate_cfg.items() if v}
-    
+    model_cfg = cfg.get('model', {})
+    task = model_cfg.get('task', 'classification')
+
     model = DisGeneFormer(
         gene_feature_dim=gene_net_data.x.shape[1],
         disease_feature_dim=disease_net_data.x.shape[1],
@@ -280,7 +282,11 @@ def run_inference_for_model(
         gene_net_hidden_dim=cfg.model.gene_net_hidden_dim,
         disease_net_hidden_dim=cfg.model.disease_net_hidden_dim,
         mode='DGP',
-        ablate=ablate_dict
+        ablate=ablate_dict,
+        task=task,
+        transformer_num_heads=int(model_cfg.get('transformer_num_heads', 4)),
+        transformer_num_layers=int(model_cfg.get('transformer_num_layers', 2)),
+        transformer_dropout=float(model_cfg.get('transformer_dropout', 0.1))
     ).to(device)
     
     # Load model weights
@@ -308,8 +314,12 @@ def run_inference_for_model(
             
             with torch.no_grad():
                 logits = mlp(feats).float()
-            out[i:i+batch] = logits[:, 1].numpy()
-        
+            if task == 'regression':
+                # One output head -> sigmoid gives the predicted score to rank by.
+                out[i:i+batch] = torch.sigmoid(logits[:, 0]).numpy()
+            else:
+                out[i:i+batch] = logits[:, 1].numpy()
+
         return out
     
     # Process each disease using pre-created test pairs

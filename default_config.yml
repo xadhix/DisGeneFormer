@@ -1,4 +1,5 @@
 model:
+  task: 'classification'        # 'classification' (2-logit focal) or 'regression' (1 score)
   fc_hidden_dim: 2048
   gene_net_hidden_dim: 512
   disease_net_hidden_dim: 512
@@ -7,8 +8,10 @@ model:
   attn_agg_strategy: 'weighted'
   transformer_hidden_dim: 512
   transformer_num_heads: 4
-  transformer_num_layers: 2
+  transformer_num_layers: 2       # now wired; set 0 to build a 0-layer encoder
   transformer_dropout: 0.1
+  ablate:
+    global_transformer: False     # True -> skip the final transformer (pass-through)
 gene_net:
   dataset_root: 'data/gene_net'
   features_to_use: '[hpo, pathways]'
@@ -31,6 +34,7 @@ gene_net:
     gene_gtex_rna_seq_expressions: 'data/gene_net/raw/gene_gtex_rna_seq_expressions.tsv'
 disease_net:
   dataset_root: 'data/disease_net'
+  id_prefixes: ['OMIM']          # disease-id prefixes admitted from all_diseases.tsv; add 'UMLS'/'C' for CUIs, ['*'] for all
   features_to_use: '[phenotypes, pathways]'
   edge_source: 'feature_similarity'
   perturb: False

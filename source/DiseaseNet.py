@@ -27,10 +27,11 @@ import shutil, pathlib
 
 class DiseaseNet(InMemoryDataset):
     class RawFileEnum:
+        # Indices MUST match the order of raw_file_names below.
         disease_hpo = 0
         disease_publication_titles = 1
-        disease_pathway = 2
-        all_diseases = 3
+        all_diseases = 2
+        disease_pathway = 3
 
     class ProcessedFileEnum:
         disease_id_feature_index_mapping = 0
@@ -62,7 +63,9 @@ class DiseaseNet(InMemoryDataset):
         """
         self.root = os.path.join(experiment_dir, "disease_net")
         os.makedirs(self.root, exist_ok=True)
-        self._raw_root = os.path.join("data/disease_net", "raw")
+        # Raw disease files live here. Config-driven so a CUI-keyed run can point at
+        # data/disease_net/raw_cui (default stays the original OMIM raw dir).
+        self._raw_root = cfg.disease_net.get('raw_root', os.path.join("data/disease_net", "raw"))
         os.makedirs(self._raw_root, exist_ok=True)
 
         self.skip_truncated_svd = cfg.disease_net.skip_truncated_svd
@@ -77,6 +80,10 @@ class DiseaseNet(InMemoryDataset):
         self.gda_edges = cfg.disease_net.gda_edges
         self.test_path = cfg.evaluation.test_path
         self.umls_omim_mapping_path = cfg.evaluation.umls_omim_mapping_path
+        # Which disease-id prefixes to admit from all_diseases.tsv. Default keeps
+        # the original OMIM-only behaviour; e.g. ['OMIM', 'UMLS', 'C'] admits UMLS
+        # CUIs so a (gene, CUI, score) dataset is first-class. [] / ['*'] = accept all.
+        self.disease_id_prefixes = tuple(cfg.disease_net.get('id_prefixes', ['OMIM']))
         super(DiseaseNet, self).__init__(self.root, transform, pre_transform)
         self.data, self.slices = torch.load(self.processed_paths[self.ProcessedFileEnum.data])
         self.seed = cfg.get('train', {}).get('seed', 42)
@@ -364,7 +371,9 @@ class DiseaseNet(InMemoryDataset):
             for line in in_file:
                 parts = [s.strip() for s in line.split('\t')]
                 identifier = parts[0]
-                if identifier.startswith('OMIM') and identifier not in disease_index_mapping:
+                accept = (not self.disease_id_prefixes or '*' in self.disease_id_prefixes
+                          or identifier.startswith(self.disease_id_prefixes))
+                if accept and identifier not in disease_index_mapping:
                     disease_index_mapping[identifier] = len(disease_index_mapping)
 
         disease_paths = [

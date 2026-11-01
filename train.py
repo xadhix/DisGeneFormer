@@ -101,7 +101,20 @@ def main(cfg):
 
     ablate_cfg = cfg.get('model', {}).get('ablate', {})
     ablate_dict = {k: bool(v) for k, v in ablate_cfg.items() if v}
-    
+
+    # --- task / head / loss configuration (defaults preserve the original run) ---
+    model_cfg = cfg.get('model', {})
+    train_cfg = cfg.get('train', {})
+    task = model_cfg.get('task', 'classification')          # 'classification' | 'regression'
+    loss_fn_name = train_cfg.get('loss_fn', 'focal_loss')   # focal_loss|cross_entropy|mse|smooth_l1
+    optimizer_name = train_cfg.get('optimizer', 'Adam')     # Adam | AdamW
+    grad_clip = float(train_cfg.get('grad_clip_max_norm', 0) or 0)  # 0 disables
+    transformer_num_heads = int(model_cfg.get('transformer_num_heads', 4))
+    transformer_num_layers = int(model_cfg.get('transformer_num_layers', 2))
+    transformer_dropout = float(model_cfg.get('transformer_dropout', 0.1))
+    if task == 'regression':
+        print(f"[task] regression | loss={loss_fn_name}")
+
 
     def weight_based_edge_pruning(data, removal_prob=0.01, perturb_setting='random'):
         """
@@ -305,17 +318,25 @@ def main(cfg):
             if multigenetic_diseases_only and len(pos) == 1:
                 continue
             for index, row in pos.iterrows():
-                train_tuples.append((row['OMIM ID'], row['EntrezGene ID'], 1))
+                if task == 'regression':
+                    # Fit the DisGeNET score (column 'y'); fall back to 1.0 if the
+                    # positives file carries no score column yet.
+                    score = float(row['y']) if ('y' in row and pd.notna(row['y'])) else 1.0
+                else:
+                    score = 1
+                train_tuples.append((row['OMIM ID'], row['EntrezGene ID'], score))
             for index, row in neg.iterrows():
+                # Negatives are fit as 0 ("no association") in both tasks.
                 train_tuples.append((row['OMIM ID'], row['EntrezGene ID'], 0))
 
         train_tuples = sorted(train_tuples)
 
         n = len(train_tuples)
         x_out = np.ones((n, 2))  # will contain (gene_idx, disease_idx) tuples.
-        
-        # Use float32 if using BCEWithLogits else use long for custom focal loss (CE)
-        y_out = torch.ones((n,), dtype=torch.long)
+
+        # Regression needs float targets; classification keeps integer class labels.
+        y_out = (torch.zeros((n,), dtype=torch.float32) if task == 'regression'
+                 else torch.ones((n,), dtype=torch.long))
 
         for i, (omim_id, gene_id, s) in enumerate(train_tuples):
             x_out[i, 0] = gene_id_index_feature_mapping[int(gene_id)]
@@ -336,12 +357,26 @@ def main(cfg):
             disease_net_hidden_dim=cfg.model.disease_net_hidden_dim
     ):
         
-        criterion = lambda logits, targets: (
-                0.25 *  # alpha
-                (1.0 - torch.exp(-F.cross_entropy(logits, targets, reduction='none', weight=torch.tensor([0.2, 0.8]).to(device))))**2.0 *  # (1 - p_t)^gamma
-                F.cross_entropy(logits, targets, reduction='none', weight=torch.tensor([0.2, 0.8]).to(device))
-                ).mean()
-        
+        def focal_loss(logits, targets):
+            ce = F.cross_entropy(logits, targets, reduction='none',
+                                 weight=torch.tensor([0.2, 0.8]).to(device))
+            return (0.25 * (1.0 - torch.exp(-ce)) ** 2.0 * ce).mean()  # alpha * (1-p_t)^gamma * CE
+
+        def regression_loss(out, targets):
+            # out: [B, 1] raw -> sigmoid into (0,1) to match the [0,1] score range.
+            pred = torch.sigmoid(out.squeeze(-1))
+            target = targets.float()
+            if loss_fn_name in ('smooth_l1', 'huber'):
+                return F.smooth_l1_loss(pred, target)
+            return F.mse_loss(pred, target)
+
+        if task == 'regression':
+            criterion = regression_loss
+        elif loss_fn_name == 'cross_entropy':
+            criterion = lambda logits, targets: F.cross_entropy(logits, targets)
+        else:
+            criterion = focal_loss
+
         
         print(f"Start Training")
         best_global_val = 1e80
@@ -391,14 +426,19 @@ def main(cfg):
                 gene_net_hidden_dim=gene_net_hidden_dim,
                 disease_net_hidden_dim=disease_net_hidden_dim,
                 mode='DGP',
-                ablate=ablate_dict
+                ablate=ablate_dict,
+                task=task,
+                transformer_num_heads=transformer_num_heads,
+                transformer_num_layers=transformer_num_layers,
+                transformer_dropout=transformer_dropout
             )
 
             model = model.to(device)
 
             scaler = torch.cuda.amp.GradScaler()
 
-            optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+            optim_cls = torch.optim.AdamW if optimizer_name == 'AdamW' else torch.optim.Adam
+            optimizer = optim_cls(model.parameters(), lr=lr, weight_decay=weight_decay)
             print(f'Stat training fold {fold}/{folds}:')
 
             losses = dict()
@@ -428,13 +468,18 @@ def main(cfg):
                     with autocast():
                         out = model(gene_net_data, disease_net_data, train_x)
                         loss = criterion(out, train_y)
-                        scaler.scale(loss).backward()
-                        scaler.step(optimizer)
-                        scaler.update()
+                    scaler.scale(loss).backward()
+                    if grad_clip > 0:
+                        scaler.unscale_(optimizer)   # clip on real (unscaled) grads
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                    scaler.step(optimizer)
+                    scaler.update()
                 else:
                     out = model(gene_net_data, disease_net_data, train_x)
                     loss = criterion(out, train_y)
                     loss.backward()
+                    if grad_clip > 0:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
                     optimizer.step()
                     
                 losses['train'].append(loss.item())

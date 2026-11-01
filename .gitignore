@@ -4,6 +4,7 @@ venv_*
 *__pycache__*
 job_output_log
 *.out
+*.err
 *.pt
 *.ptm
 *.ipynb
@@ -12,10 +13,14 @@ job_output_log
 *.csv*
 *.tsv*
 *.zip
+*.pdf
+
 data
 data1
-plots/old_results
+plots
 log
+results
+
 source/DisGeneFormer_ablation.py
 predict_genes.py
 /gene_net/*
@@ -29,3 +34,5 @@ scripts/run_humannet_comparison.sh
 
 results/hard_negatives_ablation
 results/run_humannet_comparison_disease_specific
+
+environment/DisGeneFormer/*

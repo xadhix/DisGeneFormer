@@ -69,17 +69,27 @@ class DisGeneFormer(nn.Module):
             gene_net_hidden_dim=512,
             disease_net_hidden_dim=512,
             mode='DGP',
-            ablate=None
+            ablate=None,
+            task='classification',
+            transformer_num_heads=4,
+            transformer_num_layers=2,
+            transformer_dropout=0.1
     ):
         super(DisGeneFormer, self).__init__()
         self.mode = mode
+        self.task = task
+
+        # Ablation switches (config: model.ablate.<name>: true). Absent/False = keep.
+        self.ablate = dict(ablate or {})
+        self.use_global_transformer = not self.ablate.get('global_transformer', False)
+
+        # Regression predicts one continuous score; classification predicts 2 logits.
+        self.out_dim = 1 if task == 'regression' else 2
 
         # GNN layers for genes
         self.gene_conv_0 = GATConv(gene_feature_dim, gene_net_hidden_dim, heads=4)
         self.gene_conv_1 = GATConv(gene_net_hidden_dim * 4, gene_net_hidden_dim, heads=4)
-        # Add dropout and gradient normalization to avoid exploding outliers
         self.gene_conv_2 = GATConv(gene_net_hidden_dim * 4, gene_net_hidden_dim, heads=1, dropout=0.2)
-        torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=5)
 
         self.gene_proj_0 = Linear(gene_net_hidden_dim * 4, gene_net_hidden_dim)
         self.gene_proj_1 = Linear(gene_net_hidden_dim * 4, gene_net_hidden_dim)
@@ -109,14 +119,15 @@ class DisGeneFormer(nn.Module):
             "For a single transformer aggregator, gene_net_hidden_dim must match disease_net_hidden_dim."
 
         self.hidden_dim = gene_net_hidden_dim  # == disease_net_hidden_dim
+        # Built even when ablated so checkpoints stay compatible; just not applied.
         self.global_transformer = GlobalGraphTransformer(
             hidden_dim=self.hidden_dim,
-            n_heads=4,
-            num_layers=2,
-            dropout=0.1
+            n_heads=transformer_num_heads,
+            num_layers=transformer_num_layers,
+            dropout=transformer_dropout
         )
 
-        # Final classification MLP
+        # Final head: 2 logits for classification, 1 score for regression.
         self.final_fc = nn.Sequential(
             nn.Linear(self.hidden_dim * 2, fc_hidden_dim),
             nn.LeakyReLU(),
@@ -124,7 +135,7 @@ class DisGeneFormer(nn.Module):
             nn.Linear(fc_hidden_dim, fc_hidden_dim // 2),
             nn.LeakyReLU(),
             nn.Dropout(0.3),
-            nn.Linear(fc_hidden_dim // 2, 2)  # output 2 classes
+            nn.Linear(fc_hidden_dim // 2, self.out_dim)
         )
 
         # If there is a gene classification mode separately:
@@ -175,10 +186,12 @@ class DisGeneFormer(nn.Module):
 
         d_out = self.disease_attention_agg([dx0p, dx1p, dx2])   # [N_d, D]
 
-        # Global transformer across gene and disease graphs
+        # Global transformer across gene and disease graphs (skipped if ablated)
         num_g = g_out.size(0)
         combined = torch.cat([g_out, d_out], dim=0).unsqueeze(0)       # [1, N_g+N_d, D]
-        combined = self.global_transformer(combined).squeeze(0)        # [N_g+N_d, D]
+        if self.use_global_transformer:
+            combined = self.global_transformer(combined)              # same shape
+        combined = combined.squeeze(0)                                 # [N_g+N_d, D]
 
         gene_emb     = combined[:num_g]          # [N_g, D]
         disease_emb  = combined[num_g:]          # [N_d, D]
@@ -237,8 +250,10 @@ class DisGeneFormer(nn.Module):
         combined_emb = torch.cat([gene_x_out, disease_x_out], dim=0)  # [N_g + N_d, hidden_dim]
         combined_emb = combined_emb.unsqueeze(0)                     # => [1, (N_g + N_d), hidden_dim]
 
-        combined_emb_trans = self.global_transformer(combined_emb)    # => [1, (N_g + N_d), hidden_dim]
-        combined_emb_trans = combined_emb_trans.squeeze(0)            # => [N_g + N_d, hidden_dim]
+        # Apply the global transformer unless it is ablated (then pass through).
+        if self.use_global_transformer:
+            combined_emb = self.global_transformer(combined_emb)      # => [1, (N_g + N_d), hidden_dim]
+        combined_emb_trans = combined_emb.squeeze(0)                  # => [N_g + N_d, hidden_dim]
 
         updated_gene_emb = combined_emb_trans[:num_gene_nodes, :]     # [N_g, hidden_dim]
         updated_disease_emb = combined_emb_trans[num_gene_nodes:, :]  # [N_d, hidden_dim]
