@@ -196,9 +196,9 @@ def collect_method_data(results_root: Path, metric_file: str,
         method_name = method_names.get(method_dir.name, method_dir.name)
         df['method'] = method_name
 
-        df['omim_tp'] = df['omim_tp'].round().astype(int)
-        
-        all_data.append(df[['disease_id', 'K', 'omim_tp', 'method']])
+        df['disease_tp'] = df['disease_tp'].round().astype(int)
+
+        all_data.append(df[['disease_id', 'K', 'disease_tp', 'method']])
     
     if not all_data:
         raise ValueError(f"No valid method data found in {results_root}")
@@ -262,7 +262,7 @@ def main():
         # Plot each method
         for method, g_m in grp.groupby('method'):
             ax.plot(
-                g_m['K'], g_m['omim_tp'],
+                g_m['K'], g_m['disease_tp'],
                 lw=1.6, color=color_of[method], label=method
             )
         

@@ -67,8 +67,8 @@ def parse_args():
     parser.add_argument(
         "--metric",
         type=str,
-        default="omim_prec",
-        choices=["omim_prec", "omim_recall", "omim_f1", "omim_tp"],
+        default="disease_prec",
+        choices=["disease_prec", "disease_recall", "disease_f1", "disease_tp"],
         help="Metric to compare"
     )
     parser.add_argument(
@@ -280,7 +280,7 @@ def main():
         )
     
     # Labels and formatting
-    metric_label = args.metric.replace("omim_", "OMIM ").replace("_", " ").title()
+    metric_label = args.metric.replace("disease_", "").replace("_", " ").title()
     ax.set_xlabel("Random Negatives", fontsize=14)
     ax.set_ylabel("Hard Negatives", fontsize=14)
     # ax.set_title(f"Top {args.k_value} Precision: Negative Comparison", fontsize=16)

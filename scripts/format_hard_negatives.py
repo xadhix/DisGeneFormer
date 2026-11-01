@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Strip a hard negatives TSV down to its first two columns (gene_id, omim_id), no header."""
+"""Strip a hard negatives TSV down to its first two columns (gene_id, disease_id), no header."""
 
 import sys
 import pandas as pd

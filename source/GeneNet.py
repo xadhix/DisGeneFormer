@@ -73,7 +73,7 @@ class GeneNet(InMemoryDataset):
         self.svd_n_iter = cfg.gene_net.svd_n_iter
         self.train_positives_path = cfg.gene_net.train_positives_path
         self.train_negatives_path = cfg.gene_net.train_negatives_path
-        self.all_omims_path = cfg.evaluation.all_omim_associations_path
+        self.all_associations_path = cfg.evaluation.all_disgenet_associations_path
         self.gda_edges = cfg.gene_net.gda_edges
         self.test_path = cfg.evaluation.test_path
         super(GeneNet, self).__init__(self.root, transform, pre_transform)
@@ -350,12 +350,12 @@ class GeneNet(InMemoryDataset):
 
         if self.gda_edges:
             print("Using GDA edges for GeneNet")
-            disease_genes = pd.read_csv(self.train_positives_path, sep='\t', names=['EntrezGene ID', 'OMIM ID', 'Score'])
+            disease_genes = pd.read_csv(self.train_positives_path, sep='\t', names=['EntrezGene ID', 'disease_id', 'Score'])
             gene_to_diseases = defaultdict(set)
             for _, row in disease_genes.iterrows():
                 gene_id = int(row['EntrezGene ID'])
                 if gene_id in node_index_mapping:  # Only add if gene is in our mapping
-                    gene_to_diseases[gene_id].add(row['OMIM ID'])
+                    gene_to_diseases[gene_id].add(row['disease_id'])
                     
             # Connect genes sharing diseases
             for gene1, diseases1 in sorted(gene_to_diseases.items()):
@@ -416,7 +416,8 @@ class GeneNet(InMemoryDataset):
                 node_index_mapping[gid] = len(node_index_mapping)
 
         # 1) positives ------------------------------------------------------
-        pos = pd.read_csv(self.all_omims_path, sep="\t", header=None)[0].dropna().tolist()
+        # DisGeNET associations have a header row; the gene id is the first column.
+        pos = pd.read_csv(self.all_associations_path, sep="\t").iloc[:, 0].dropna().tolist()
         for gid in sorted(pos, key=int):                    
             add_gene(gid)
 

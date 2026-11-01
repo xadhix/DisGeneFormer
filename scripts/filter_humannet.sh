@@ -18,8 +18,7 @@ conda activate DisGeneFormer_env
 
 # Configuration
 HUMANNET_FILE="data/gene_net/raw/HumanNet-XC-V3.tsv"
-OMIM_ASSOC_FILE="data/test/raw/all_omim_associations.tsv"
-DISEASE_MAP_FILE="data/test/UMLS_OMIM_map.tsv"
+DISGENET_ASSOC_FILE="data/test/raw/all_disgenet_associations.tsv"
 OUTPUT_DIR="data/gene_net/raw"
 
 # List of diseases to process
@@ -54,9 +53,8 @@ for disease_id in "${DISEASES[@]}"; do
     
     python scripts/filter_humannet.py \
         "$HUMANNET_FILE" \
-        "$OMIM_ASSOC_FILE" \
+        "$DISGENET_ASSOC_FILE" \
         "$output_file" \
-        --disease-map "$DISEASE_MAP_FILE" \
         --diseases "$disease_id"
     
     if [ $? -eq 0 ]; then

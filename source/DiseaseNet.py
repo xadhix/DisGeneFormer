@@ -18,7 +18,6 @@ from torch_geometric.data import InMemoryDataset, Data
 from torch_geometric.utils import dense_to_sparse
 from tqdm import tqdm
 
-import ast
 from collections import defaultdict
 
 import pandas as pd
@@ -63,8 +62,8 @@ class DiseaseNet(InMemoryDataset):
         """
         self.root = os.path.join(experiment_dir, "disease_net")
         os.makedirs(self.root, exist_ok=True)
-        # Raw disease files live here. Config-driven so a CUI-keyed run can point at
-        # data/disease_net/raw_cui (default stays the original OMIM raw dir).
+        # Raw disease files live here. Config-driven (disease_net.raw_root) so a run can
+        # point at CUI-keyed features, e.g. data/disease_net/raw_cui.
         self._raw_root = cfg.disease_net.get('raw_root', os.path.join("data/disease_net", "raw"))
         os.makedirs(self._raw_root, exist_ok=True)
 
@@ -79,11 +78,9 @@ class DiseaseNet(InMemoryDataset):
         self.train_negatives_path = cfg.disease_net.train_negatives_path
         self.gda_edges = cfg.disease_net.gda_edges
         self.test_path = cfg.evaluation.test_path
-        self.umls_omim_mapping_path = cfg.evaluation.umls_omim_mapping_path
-        # Which disease-id prefixes to admit from all_diseases.tsv. Default keeps
-        # the original OMIM-only behaviour; e.g. ['OMIM', 'UMLS', 'C'] admits UMLS
-        # CUIs so a (gene, CUI, score) dataset is first-class. [] / ['*'] = accept all.
-        self.disease_id_prefixes = tuple(cfg.disease_net.get('id_prefixes', ['OMIM']))
+        # Which disease-id prefixes to admit from all_diseases.tsv. Disease ids are
+        # UMLS CUIs (prefix 'C'); [] / ['*'] admits every id.
+        self.disease_id_prefixes = tuple(cfg.disease_net.get('id_prefixes', ['C']))
         super(DiseaseNet, self).__init__(self.root, transform, pre_transform)
         self.data, self.slices = torch.load(self.processed_paths[self.ProcessedFileEnum.data])
         self.seed = cfg.get('train', {}).get('seed', 42)
@@ -278,10 +275,10 @@ class DiseaseNet(InMemoryDataset):
         to_be_linked_diseases = collections.defaultdict(set)
 
         logging.info('Generate disease edges using gene-disease association data')
-        gene_diseases = pd.read_csv(self.train_positives_path, sep='\t', names=['EntrezGene ID', 'OMIM ID', 'Score'])
+        gene_diseases = pd.read_csv(self.train_positives_path, sep='\t', names=['EntrezGene ID', 'disease_id', 'Score'])
         disease_to_genes = defaultdict(set)
         for _, row in gene_diseases.iterrows():
-            disease_to_genes[row['OMIM ID']].add(row['EntrezGene ID'])
+            disease_to_genes[row['disease_id']].add(row['EntrezGene ID'])
         
         if self.gda_edges:
             # Connect diseases sharing genes
@@ -389,24 +386,6 @@ class DiseaseNet(InMemoryDataset):
                 for disease in new_diseases:
                     if disease not in disease_index_mapping:
                         disease_index_mapping[disease] = len(disease_index_mapping)
-
-        umls2omim_path = self.umls_omim_mapping_path
-        mapping_df     = pd.read_csv(umls2omim_path, sep="\t", header=None, dtype=str)
-
-        for _, row in mapping_df.iterrows():
-            umls_id       = row[0].strip()
-            omim_list_raw = row[1]
-
-            try:
-                omim_ids = ast.literal_eval(omim_list_raw)
-            except Exception as e:
-                print(f"[warn] bad OMIM list for {umls_id}: {omim_list_raw} ({e})")
-                continue
-
-            for omim in omim_ids:
-                omim = str(omim).strip()
-                if omim and omim not in disease_index_mapping:
-                    disease_index_mapping[omim] = len(disease_index_mapping)
 
 
         with open(self.processed_paths[self.ProcessedFileEnum.disease_id_feature_index_mapping], mode='w') as out_file:

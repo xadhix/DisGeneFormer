@@ -69,7 +69,7 @@ bash scripts/download_all_models_and_results.sh --only DGF
 You may download all results and model weights from the manuscript by referring to the next sections.
 
 ### Predict disease gene rankings with DisGeneFormer
-To predict ranked genes lists with DisGeneFormer, run one of the following commands. Note that this will use DGF to predict genes for all diseases provided in `data/eval_diseases.tsv`. You may modify this file to add or remove diseases to include in this by adding either the OMIM IDs or UMLS CUIs of diseases.
+To predict ranked genes lists with DisGeneFormer, run one of the following commands. Note that this will use DGF to predict genes for all diseases provided in `data/eval_diseases.tsv`. You may modify this file to add or remove diseases to include in this by adding the UMLS CUIs of diseases.
 ```bash
 python predict_genes_fold.py results/DisGeneFormer --predict-only
 ```
@@ -92,7 +92,7 @@ python predict_genes_fold.py results/DisGeneFormer_filtered
 ``` -->
 
 <!-- ### Predict the top ranked genes using the model
-The model produces a list of ranked genes for each given disease defined in `data/eval_diseases.tsv`. Diseases can be provided either as OMIM IDs or as UMLS CUIs which will each be treated as a set of OMIM IDs and mapped accordingly, based on the mapping defined in `data/test/UMLS_OMIM_map.tsv`. 
+The model produces a list of ranked genes for each given disease defined in `data/eval_diseases.tsv`. Diseases are provided as UMLS CUIs. 
 
 To get a list of ranked disease genes for the diseases defined in `data/eval_diseases.tsv`, run `predict_disease_genes.py <path_to_saved_model>` as done below:
 ```bash
@@ -115,18 +115,18 @@ python evaluate_fold.py results/DisGeneFormer_filtered
 ```
 
 <!-- ### Filter GeneNet edges 
-To filter the edges added to GeneNet based on specific OMIM disorders, you may run the following to create a custom filtered version of HumanNet.
+To filter the edges added to GeneNet based on specific diseases (UMLS CUIs), you may run the following to create a custom filtered version of HumanNet.
 
 For all genes associated with specific diseases
 
 ```bash
-python scripts/filter_humannet.py data/gene_net/raw/HumanNet-XC-V3.tsv data/test/raw/all_omim_associations.tsv data/gene_net/raw/HumanNet-XC-V3_disease_filtered_2.tsv --disease-map data/test/UMLS_OMIM_map.tsv --diseases C0006142 C0009402 C0023893 C0036341 C0376358 C0001973 C0011581 C0860207 C0005586 C3714756
+python scripts/filter_humannet.py data/gene_net/raw/HumanNet-XC-V3.tsv data/test/raw/all_disgenet_associations.tsv data/gene_net/raw/HumanNet-XC-V3_disease_filtered_2.tsv --diseases C0006142 C0009402 C0023893 C0036341 C0376358 C0001973 C0011581 C0860207 C0005586 C3714756
 ```
 
-For all OMIM genes
+For all genes in the DisGeNET associations
 
 ```bash
-python scripts/filter_humannet.py data/gene_net/raw/HumanNet-XC-V3.tsv data/test/raw/all_omim_associations.tsv data/gene_net/raw/HumanNet-XC-V3_omim_filtered.tsv 
+python scripts/filter_humannet.py data/gene_net/raw/HumanNet-XC-V3.tsv data/test/raw/all_disgenet_associations.tsv data/gene_net/raw/HumanNet-XC-V3_disease_filtered.tsv 
 ``` -->
 
 ## Reproduce all results
