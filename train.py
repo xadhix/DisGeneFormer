@@ -112,8 +112,15 @@ def main(cfg):
     transformer_num_heads = int(model_cfg.get('transformer_num_heads', 4))
     transformer_num_layers = int(model_cfg.get('transformer_num_layers', 2))
     transformer_dropout = float(model_cfg.get('transformer_dropout', 0.1))
+    # --- regression target reframing (defaults preserve the original run) ---
+    # pos_weight>1 up-weights positive (score>0) pairs in the loss; target_transform
+    # 'binary' fits every positive as 1.0 (Brier-style classification) instead of its
+    # DisGeNET score. Both target the near-constant collapse on the 0-heavy score.
+    pos_weight = float(train_cfg.get('pos_weight', 1.0))
+    target_transform = str(train_cfg.get('target_transform', 'none')).lower()
     if task == 'regression':
-        print(f"[task] regression | loss={loss_fn_name}")
+        print(f"[task] regression | loss={loss_fn_name} | "
+              f"target_transform={target_transform} | pos_weight={pos_weight}")
 
 
     def weight_based_edge_pruning(data, removal_prob=0.01, perturb_setting='random'):
@@ -322,6 +329,9 @@ def main(cfg):
                     # Fit the DisGeNET score (column 'y'); fall back to 1.0 if the
                     # positives file carries no score column yet.
                     score = float(row['y']) if ('y' in row and pd.notna(row['y'])) else 1.0
+                    if target_transform == 'binary':
+                        # Reframe: every positive is 1.0 (classification), not its score.
+                        score = 1.0
                 else:
                     score = 1
                 train_tuples.append((row['disease_id'], row['EntrezGene ID'], score))
@@ -366,9 +376,19 @@ def main(cfg):
             # out: [B, 1] raw -> sigmoid into (0,1) to match the [0,1] score range.
             pred = torch.sigmoid(out.squeeze(-1))
             target = targets.float()
+            reduction = 'none' if pos_weight != 1.0 else 'mean'
             if loss_fn_name in ('smooth_l1', 'huber'):
-                return F.smooth_l1_loss(pred, target)
-            return F.mse_loss(pred, target)
+                per = F.smooth_l1_loss(pred, target, reduction=reduction)
+            else:
+                per = F.mse_loss(pred, target, reduction=reduction)
+            if pos_weight == 1.0:
+                return per
+            # Up-weight positive (score>0) pairs so the loss is not dominated by the
+            # 0-heavy target (the near-constant-collapse failure mode).
+            w = torch.where(target > 0,
+                            torch.as_tensor(pos_weight, device=per.device, dtype=per.dtype),
+                            torch.ones((), device=per.device, dtype=per.dtype))
+            return (per * w).sum() / w.sum()
 
         if task == 'regression':
             criterion = regression_loss
