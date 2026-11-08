@@ -397,7 +397,45 @@ def main(cfg):
         else:
             criterion = focal_loss
 
-        
+        # --- per-disease ranking objective (opt-in via train.loss_fn: 'ranking') ---
+        # RankNet/BPR: within each disease, push positive (causal) gene scores above that
+        # disease's negatives -- directly optimises the per-disease ranking that recall@K
+        # measures ("1 causal + n random, rank them"). Uses raw scores (monotonic -> eval
+        # AUC/recall unchanged). Default losses are untouched.
+        use_ranking = (task == 'regression' and loss_fn_name == 'ranking')
+
+        def group_pos_neg(x_arr, y_tensor):
+            """Per-disease (pos_idx, neg_idx) tensors for diseases that have both."""
+            g = x_arr[:, 1].astype(int)
+            y = y_tensor.detach().cpu().numpy()
+            pos, neg = {}, {}
+            for i in range(len(g)):
+                (pos if y[i] > 0 else neg).setdefault(int(g[i]), []).append(i)
+            groups = []
+            for d, pl in pos.items():
+                nl = neg.get(d)
+                if nl:
+                    groups.append((torch.tensor(pl, device=device, dtype=torch.long),
+                                   torch.tensor(nl, device=device, dtype=torch.long)))
+            return groups
+
+        def ranking_loss(out, groups):
+            s = out.squeeze(-1)
+            terms = []
+            for pi, ni in groups:
+                diff = s[pi].unsqueeze(1) - s[ni].unsqueeze(0)   # [P, N] pos-minus-neg
+                terms.append(F.softplus(-diff).mean())           # BPR/RankNet
+            if not terms:
+                return s.sum() * 0.0
+            return torch.stack(terms).mean()
+
+        def phased_loss(out, targets, rank_groups):
+            # Ranking objective for TRAINING only; falls back to `criterion` if a batch has
+            # no rankable disease (keeps validation/selection identical to the other runs).
+            if use_ranking and rank_groups:
+                return ranking_loss(out, rank_groups)
+            return criterion(out, targets)
+
         print(f"Start Training")
         best_global_val = 1e80
         best_global_state = None
@@ -416,6 +454,9 @@ def main(cfg):
             train_y = all_train_y[id_tr].to(device)
             val_x = all_train_x[id_val]
             val_y = all_train_y[id_val].to(device)
+
+            # Precompute per-disease pos/neg groupings for the ranking TRAINING objective.
+            train_groups_rank = group_pos_neg(train_x, train_y) if use_ranking else None
 
             # Generate the test data for mono and multigenetic diseases.
             all_indexes = list(range(len(covered_diseases)))
@@ -487,7 +528,7 @@ def main(cfg):
                 if use_autocast:
                     with autocast():
                         out = model(gene_net_data, disease_net_data, train_x)
-                        loss = criterion(out, train_y)
+                        loss = phased_loss(out, train_y, train_groups_rank)
                     scaler.scale(loss).backward()
                     if grad_clip > 0:
                         scaler.unscale_(optimizer)   # clip on real (unscaled) grads
@@ -496,7 +537,7 @@ def main(cfg):
                     scaler.update()
                 else:
                     out = model(gene_net_data, disease_net_data, train_x)
-                    loss = criterion(out, train_y)
+                    loss = phased_loss(out, train_y, train_groups_rank)
                     loss.backward()
                     if grad_clip > 0:
                         torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
