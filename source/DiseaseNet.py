@@ -31,6 +31,7 @@ class DiseaseNet(InMemoryDataset):
         disease_publication_titles = 1
         all_diseases = 2
         disease_pathway = 3
+        disease_umls = 4          # UMLS semantic-type + relation features (Option A)
 
     class ProcessedFileEnum:
         disease_id_feature_index_mapping = 0
@@ -102,7 +103,8 @@ class DiseaseNet(InMemoryDataset):
             'disease_hpo.tsv',
             'disease_publication_titles_and_abstracts.tsv',
             'all_diseases.tsv',
-            'disease_pathway.tsv'
+            'disease_pathway.tsv',
+            'disease_umls.tsv'      # order MUST match RawFileEnum above
         ]
 
         return base_names
@@ -121,7 +123,12 @@ class DiseaseNet(InMemoryDataset):
             dest = os.path.join(self.raw_dir, file)
             if not os.path.isfile(dest):
                 src = os.path.join(self.raw_dir, '..', '..', file)
-                copyfile(src, dest)
+                # An optional raw file may be absent (e.g. disease_hpo.tsv when using
+                # UMLS features instead, or disease_umls.tsv on a classic HPO run).
+                # Skip it here; process() errors only if it is actually needed by the
+                # configured features_to_use.
+                if os.path.isfile(src):
+                    copyfile(src, dest)
 
     def process(self):
         logging.info('Create disease_id feature_index mapping.')
@@ -216,6 +223,29 @@ class DiseaseNet(InMemoryDataset):
             # Create the feature matrix
             tmp = torch.tensor(mlb.transform(disease_features), dtype=torch.float)
             # Concat with previous feature matrix.
+            if x is not None:
+                x = torch.cat((x, tmp), dim=1)
+            else:
+                x = tmp
+
+        if 'umls' in self.feature_source:
+            logging.info('Create UMLS (semantic-type + relation) feature vectors.')
+            mlb = MultiLabelBinarizer()
+            umls_tokens = set()
+            disease_umls_map = collections.defaultdict(set)
+            with open(osp.join(self.raw_dir, self.raw_file_names[self.RawFileEnum.disease_umls])) as umls_file:
+                for line in umls_file:
+                    row = [s.strip() for s in line.split('\t')]
+                    if len(row) < 2:
+                        continue
+                    dis_id, token = row[0], row[1]
+                    umls_tokens.add(token)
+                    disease_umls_map[dis_id].add(token)
+
+            mlb.fit([sorted(umls_tokens)])
+            disease_id_sorted_by_index = sorted(disease_index_mapping.keys(), key=lambda x: disease_index_mapping[x])
+            disease_features = [sorted(disease_umls_map[d_id]) for d_id in disease_id_sorted_by_index]
+            tmp = torch.tensor(mlb.transform(disease_features), dtype=torch.float)
             if x is not None:
                 x = torch.cat((x, tmp), dim=1)
             else:
