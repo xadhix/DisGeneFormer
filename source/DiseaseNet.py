@@ -67,6 +67,9 @@ class DiseaseNet(InMemoryDataset):
         # point at CUI-keyed features, e.g. data/disease_net/raw_cui.
         self._raw_root = cfg.disease_net.get('raw_root', os.path.join("data/disease_net", "raw"))
         os.makedirs(self._raw_root, exist_ok=True)
+        # Which UMLS feature file to read for the 'umls' source (lets enriched and
+        # unenriched builds coexist and be selected per-config).
+        self._umls_file = cfg.disease_net.get('umls_file', 'disease_umls.tsv')
 
         self.skip_truncated_svd = cfg.disease_net.skip_truncated_svd
         self.svd_components = cfg.disease_net.svd_components
@@ -233,7 +236,7 @@ class DiseaseNet(InMemoryDataset):
             mlb = MultiLabelBinarizer()
             umls_tokens = set()
             disease_umls_map = collections.defaultdict(set)
-            with open(osp.join(self.raw_dir, self.raw_file_names[self.RawFileEnum.disease_umls])) as umls_file:
+            with open(osp.join(self.raw_dir, self._umls_file)) as umls_file:
                 for line in umls_file:
                     row = [s.strip() for s in line.split('\t')]
                     if len(row) < 2:
