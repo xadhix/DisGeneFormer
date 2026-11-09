@@ -87,9 +87,11 @@ class DiseaseNet(InMemoryDataset):
         # Which disease-id prefixes to admit from all_diseases.tsv. Disease ids are
         # UMLS CUIs (prefix 'C'); [] / ['*'] admits every id.
         self.disease_id_prefixes = tuple(cfg.disease_net.get('id_prefixes', ['C']))
+        # Must be set BEFORE super().__init__() — it triggers process(), and the
+        # TruncatedSVD path (skip_truncated_svd=False) reads self.seed during processing.
+        self.seed = cfg.get('train', {}).get('seed', 42)
         super(DiseaseNet, self).__init__(self.root, transform, pre_transform)
         self.data, self.slices = torch.load(self.processed_paths[self.ProcessedFileEnum.data])
-        self.seed = cfg.get('train', {}).get('seed', 42)
 
         # Set seeds for reproducibility
         os.environ["PYTHONHASHSEED"] = str(self.seed)
