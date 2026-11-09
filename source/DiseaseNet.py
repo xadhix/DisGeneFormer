@@ -70,6 +70,8 @@ class DiseaseNet(InMemoryDataset):
         # Which UMLS feature file to read for the 'umls' source (lets enriched and
         # unenriched builds coexist and be selected per-config).
         self._umls_file = cfg.disease_net.get('umls_file', 'disease_umls.tsv')
+        # Option B: edge list file for edge_source == 'umls_relations'.
+        self._umls_edges_file = cfg.disease_net.get('umls_edges_file', 'disease_umls_edges.tsv')
 
         self.skip_truncated_svd = cfg.disease_net.skip_truncated_svd
         self.svd_components = cfg.disease_net.svd_components
@@ -145,6 +147,8 @@ class DiseaseNet(InMemoryDataset):
             self.generate_edges()
         if self.edge_source == 'feature_similarity':
             self.generate_edges_similarity_based()
+        if self.edge_source == 'umls_relations':
+            self.generate_edges_umls_relations()
 
         # Create and store the data object
         self.generate_data_object()
@@ -388,6 +392,49 @@ class DiseaseNet(InMemoryDataset):
         edge_index = edge_index[:, order]
         edge_attr = edge_attr[order]
 
+        torch.save((edge_index, edge_attr), self.processed_paths[self.ProcessedFileEnum.edges])
+
+    def generate_edges_umls_relations(self):
+        """Option B: disease edges ARE the UMLS hierarchical relations between disease CUIs
+        (read from the precomputed edge file), instead of feature-similarity kNN. Nodes with
+        no relation edge fall back to feature-similarity kNN so the graph stays connected."""
+        import numpy as np
+        logging.info('Generate UMLS-relation disease edges (Option B).')
+        disease_index_mapping = self.load_disease_index_feature_mapping()
+        sources, targets, scores = [], [], []
+        seen = set()
+        edge_path = osp.join(self.raw_dir, self._umls_edges_file)
+        with open(edge_path) as f:
+            for line in f:
+                parts = [s.strip() for s in line.split('\t')]
+                if len(parts) < 2:
+                    continue
+                c1, c2 = parts[0], parts[1]
+                if c1 in disease_index_mapping and c2 in disease_index_mapping:
+                    i, j = disease_index_mapping[c1], disease_index_mapping[c2]
+                    for a, b in ((i, j), (j, i)):   # undirected
+                        if (a, b) not in seen:
+                            seen.add((a, b)); sources.append(a); targets.append(b); scores.append(1)
+
+        # Fallback: feature-kNN edges for nodes with no relation edge (avoid isolated nodes).
+        X = normalize(np.asarray(self.load_node_feature_martix()))
+        n = X.shape[0]
+        linked = set(sources)
+        isolated = [i for i in range(n) if i not in linked]
+        if isolated:
+            logging.info(f'{len(isolated)} isolated nodes -> add feature-kNN fallback edges.')
+            nn = neighbors.NearestNeighbors(n_neighbors=self.n_neighbours).fit(X)
+            _, idxs = nn.kneighbors(X[isolated])
+            for row, i in zip(idxs, isolated):
+                for j in row:
+                    sources.append(i); targets.append(int(j)); scores.append(1)
+
+        edge_index = torch.tensor([sources, targets], dtype=torch.long)
+        edge_attr = torch.tensor(scores).reshape((len(sources), 1))
+        order = edge_index[0].argsort(stable=True)
+        edge_index = edge_index[:, order]
+        edge_attr = edge_attr[order]
+        logging.info(f'UMLS-relation graph: {edge_index.shape[1]} directed edges over {n} nodes.')
         torch.save((edge_index, edge_attr), self.processed_paths[self.ProcessedFileEnum.edges])
 
     def create_disease_index_feature_mapping(self):
