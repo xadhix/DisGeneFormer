@@ -446,39 +446,19 @@ def main(cfg):
             fold += 1
             best_val_loss = 1e80
             print(f'Generate training data for fold {fold}.')
-            all_train_x, all_train_y = get_training_data_from_indexes(train_index)
-
-            # Split into train and validation set.
-            id_tr, id_val = train_test_split(range(len(all_train_x)), test_size=0.01, random_state=train_seed)
-            train_x = all_train_x[id_tr]
-            train_y = all_train_y[id_tr].to(device)
-            val_x = all_train_x[id_val]
-            val_y = all_train_y[id_val].to(device)
+            # Train on ALL pairs of the training-fold diseases; validate on the
+            # held-out fold's diseases so model selection is DISEASE-DISJOINT
+            # (proper CV). Previously the validation signal was a random 1%-of-pairs
+            # split (`id_val`), which could place the same disease on both sides
+            # (leakage for selection) while the disease-disjoint fold was computed
+            # and discarded. Now the held-out fold IS the validation set.
+            train_x, train_y = get_training_data_from_indexes(train_index)
+            train_y = train_y.to(device)
+            val_x, val_y = get_training_data_from_indexes(test_index)
+            val_y = val_y.to(device)
 
             # Precompute per-disease pos/neg groupings for the ranking TRAINING objective.
             train_groups_rank = group_pos_neg(train_x, train_y) if use_ranking else None
-
-            # Generate the test data for mono and multigenetic diseases.
-            all_indexes = list(range(len(covered_diseases)))
-            print(f'Generate test data for fold {fold}.')
-            test_x = dict()
-            test_y = dict()
-            test_x['mono'], test_y['mono'] = get_training_data_from_indexes(test_index, monogenetic_disease_only=True)
-            test_y['mono'] = test_y['mono'].to(device)
-            test_x['multi'], test_y['multi'] = get_training_data_from_indexes(test_index, multigenetic_diseases_only=True)
-            test_y['multi'] = test_y['multi'].to(device)
-
-            # Save the test data to the relevant directory
-            test_data = {
-                'mono': {
-                    'x': test_x['mono'].tolist(),  # Convert numpy array to list
-                    'y': test_y['mono'].cpu().tolist()  # Move tensor to CPU and convert to list
-                },
-                'multi': {
-                    'x': test_x['multi'].tolist(),  # Convert numpy array to list
-                    'y': test_y['multi'].cpu().tolist()  # Move tensor to CPU and convert to list
-                }
-            }
 
             model = DisGeneFormer(
                 gene_feature_dim=gene_net_data.x.shape[1],
@@ -570,16 +550,21 @@ def main(cfg):
                     best_global_val = current_val_loss
                     best_global_state = model.state_dict().copy()
 
+                # Early stopping (epoch-level): stop THIS fold once the latest val
+                # loss exceeds the best of the trailing `early_stopping_window`
+                # epochs. Breaks the EPOCH loop (not the fold loop), so every CV
+                # fold still runs and trains until it stops improving. (Previously
+                # this check sat outside the epoch loop, so it never truncated
+                # epochs and instead aborted the remaining folds.)
+                if epoch > early_stopping_window:
+                    last_window_losses = losses['val'][epoch - early_stopping_window:epoch]
+                    if losses['val'][-1] > max(last_window_losses):
+                        print(f'Early stopping fold {fold} at epoch {epoch}.')
+                        break
+
             # Save the best model for this fold
             torch.save(best_fold_state, osp.join(experiment_dir, f'best_model_fold_{fold}.ptm'), _use_new_zipfile_serialization=False)
             print(f"Fold {fold} best val loss: {best_val_loss:.4f}")
-
-            # Early stopping
-            if epoch > early_stopping_window:
-                last_window_losses = losses['val'][epoch - early_stopping_window:epoch]
-                if losses['val'][-1] > max(last_window_losses):
-                    print('Early Stopping!')
-                    break
 
         print(f"Training completed for fold {fold} ({time.time()})")
         torch.save(best_global_state, osp.join(experiment_dir, f'best_model.ptm'), _use_new_zipfile_serialization=False)
