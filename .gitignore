@@ -38,3 +38,6 @@ results/run_humannet_comparison_disease_specific
 environment/DisGeneFormer/*
 
 .DS_Store
+
+optuna/
+runs/

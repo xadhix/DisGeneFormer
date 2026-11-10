@@ -1,0 +1,86 @@
+model:
+  task: 'regression'
+  fc_hidden_dim: 2048
+  gene_net_hidden_dim: 512
+  disease_net_hidden_dim: 512
+  num_attn_heads: 4
+  num_layers: 3
+  attn_agg_strategy: 'weighted'
+  transformer_hidden_dim: 512
+  transformer_num_heads: 4
+  transformer_num_layers: 2       # now wired; set 0 to build a 0-layer encoder
+  transformer_dropout: 0.1
+  ablate:
+    global_transformer: False
+gene_net:
+  dataset_root: 'data/gene_net'
+  features_to_use: '[hpo, pathways]'
+  humannet_version: 'XC-V3_disease_filtered'
+  perturb: False
+  perturb_setting: 'random'
+  perturb_prob: 0.01
+  skip_truncated_svd: True
+  svd_components: 512
+  svd_n_iter: 12
+  train_positives_path: 'data/training/train_human.tsv'
+  train_negatives_path: 'data/training/train_hard_negatives.tsv'
+  gda_edges: False
+  raw_file_paths:
+    gene_ontologies: 'data/gene_net/raw/gene_ontologies.tsv'
+    humannet: 'data/gene_net/raw/HumanNet-XC-V3_disease_filtered.tsv'
+    gene_hpo_diseases: 'data/gene_net/raw/gene_hpo_disease.tsv'
+    gene_expressions: 'data/gene_net/raw/gene_expressions.tsv'
+    gene_pathways: 'data/gene_net/raw/gene_pathway_associations.tsv'
+    gene_gtex_rna_seq_expressions: 'data/gene_net/raw/gene_gtex_rna_seq_expressions.tsv'
+disease_net:
+  dataset_root: 'data/disease_net'
+  id_prefixes: ['OMIM']          # disease-id prefixes admitted from all_diseases.tsv; add 'UMLS'/'C' for CUIs, ['*'] for all
+  features_to_use: '[phenotypes, pathways]'
+  edge_source: 'feature_similarity'
+  perturb: False
+  perturb_setting: 'random'
+  perturb_prob: 0.01
+  hpo_count_freq_cutoff: 40
+  skip_truncated_svd: True
+  svd_components: 512
+  svd_n_iter: 12
+  n_neighbors: 32 
+  train_positives_path: 'data/training/train_human.tsv'
+  train_negatives_path: 'data/training/train_hard_negatives.tsv'
+  gda_edges: False
+  raw_file_paths:
+    disease_hpo: 'data/disease_net/raw/disease_hpo.tsv'
+    disease_pathways: 'data/disease_net/raw/disease_pathway.tsv'
+    disease_publications: 'data/disease_net/raw/disease_publication_titles_and_abstracts.tsv'
+    all_diseases: 'data/disease_net/raw/all_diseases.tsv'
+data:
+  train_positives_path: 'data/training/train_human.tsv'
+  train_negatives_path: 'data/training/train_hard_negatives.tsv'
+  negative_target: 0            # regression only: 0 fits negatives as "no association"; -1 masks them (unknown)
+train:
+  n_folds: 5
+  max_epochs: 100
+  early_stopping_window: 20
+  lr: 0.000001
+  weight_decay: 0.000001
+  model_tmp_storage_path: '/tmp'
+  experiment_dir: 'results/best_model'
+  info_each_epoch: 1
+  loss_fn: 'focal_loss'
+  optimizer: 'Adam'
+  attn_dropout: 0.2
+  grad_clip_max_norm: 5
+  final_hidden_dim: 512
+evaluation:
+  eval_strategy: 'top_k' 
+  eval_single_omim: False 
+  test_sets: 'all' 
+  plot_correlation: False
+  plot_precision_recall: True
+  top_k: '[5, 20, 50]'
+  metrics: 'precision, recall, f1'
+  test_path: 'data/test/disease_specific'
+  eval_diseases: '[]'
+  umls_omim_mapping_path: 'data/test/UMLS_OMIM_map.tsv'
+  all_omim_associations_path: 'data/test/raw/all_omim_associations.tsv'
+  all_disgenet_associations_path: 'data/test/raw/all_disgenet_associations.tsv'
