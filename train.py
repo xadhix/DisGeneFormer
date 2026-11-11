@@ -130,6 +130,9 @@ def main(cfg):
     _rdb = train_cfg.get('ranking_disease_batch', 'all')
     ranking_disease_batch = _rdb if (isinstance(_rdb, str) and _rdb == 'all') else int(_rdb)
     ranking_temperature = float(train_cfg.get('ranking_temperature', 1.0))
+    # loss_fn: 'combo' => smooth_l1(binary) + ranking_lambda * sampled_softmax, to keep a
+    # calibrated score AND strong ranking. ranking_lambda weights the ranking term.
+    ranking_lambda = float(train_cfg.get('ranking_lambda', 1.0))
     if task == 'regression':
         print(f"[task] regression | loss={loss_fn_name} | "
               f"target_transform={target_transform} | pos_weight={pos_weight} | "
@@ -463,6 +466,7 @@ def main(cfg):
         # Aligns training with eval's recall@K (which ranks ALL genes). Scores come from one
         # forward() over a constructed candidate batch; disease sub-batching bounds memory.
         use_sampled_softmax = (task == 'regression' and loss_fn_name == 'sampled_softmax')
+        use_combo = (task == 'regression' and loss_fn_name == 'combo')
         n_genes = gene_net_data.x.shape[0]
 
         def pos_by_disease_for(disease_indexes):
@@ -533,7 +537,7 @@ def main(cfg):
 
             # Per-disease positive gene indices for the sampled-softmax objective
             # (train = training-fold diseases, val = held-out fold diseases).
-            if use_sampled_softmax:
+            if use_sampled_softmax or use_combo:
                 ss_pos_train = pos_by_disease_for(train_index)
                 ss_pos_val = pos_by_disease_for(test_index)
 
@@ -574,23 +578,43 @@ def main(cfg):
                 'FPR': None
             }
 
+            def _train_loss(epoch):
+                if use_sampled_softmax:
+                    return sampled_softmax_loss(
+                        ss_pos_train, ranking_num_negatives, ranking_disease_batch,
+                        np.random.default_rng(train_seed + epoch), ranking_temperature)
+                out = model(gene_net_data, disease_net_data, train_x)
+                base = phased_loss(out, train_y, train_groups_rank)
+                if use_combo:
+                    ss = sampled_softmax_loss(
+                        ss_pos_train, ranking_num_negatives, ranking_disease_batch,
+                        np.random.default_rng(train_seed + epoch), ranking_temperature)
+                    return base + ranking_lambda * ss
+                return base
+
+            def _val_loss():
+                if use_sampled_softmax:
+                    return sampled_softmax_loss(
+                        ss_pos_val, ranking_num_negatives, ranking_disease_batch,
+                        np.random.default_rng(train_seed), ranking_temperature)
+                val_logits = model(gene_net_data, disease_net_data, val_x)
+                base = criterion(val_logits, val_y)
+                if use_combo:
+                    ss = sampled_softmax_loss(
+                        ss_pos_val, ranking_num_negatives, ranking_disease_batch,
+                        np.random.default_rng(train_seed), ranking_temperature)
+                    return base + ranking_lambda * ss
+                return base
+
             for epoch in range(max_epochs):
                 # Train model.
-                # if epoch % refresh_every == 0 and epoch > 0:
-                #     gene_cache, disease_cache = encode_graphs(model, gene_net_data, disease_net_data)
                 model.train()
                 optimizer.zero_grad()
 
                 # Use autocast to speed up
                 if use_autocast:
                     with autocast():
-                        if use_sampled_softmax:
-                            loss = sampled_softmax_loss(
-                                ss_pos_train, ranking_num_negatives, ranking_disease_batch,
-                                np.random.default_rng(train_seed + epoch), ranking_temperature)
-                        else:
-                            out = model(gene_net_data, disease_net_data, train_x)
-                            loss = phased_loss(out, train_y, train_groups_rank)
+                        loss = _train_loss(epoch)
                     scaler.scale(loss).backward()
                     if grad_clip > 0:
                         scaler.unscale_(optimizer)   # clip on real (unscaled) grads
@@ -598,13 +622,7 @@ def main(cfg):
                     scaler.step(optimizer)
                     scaler.update()
                 else:
-                    if use_sampled_softmax:
-                        loss = sampled_softmax_loss(
-                            ss_pos_train, ranking_num_negatives, ranking_disease_batch,
-                            np.random.default_rng(train_seed + epoch), ranking_temperature)
-                    else:
-                        out = model(gene_net_data, disease_net_data, train_x)
-                        loss = phased_loss(out, train_y, train_groups_rank)
+                    loss = _train_loss(epoch)
                     loss.backward()
                     if grad_clip > 0:
                         torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
@@ -612,18 +630,12 @@ def main(cfg):
 
                 losses['train'].append(loss.item())
 
-                # Validation.
+                # Validation (same objective on the disease-disjoint held-out fold; for
+                # sampled_softmax/combo the negatives use a fixed seed so val is comparable
+                # across epochs for early stopping / selection).
                 model.eval()
                 with torch.no_grad(), autocast(enabled=use_autocast):
-                    if use_sampled_softmax:
-                        # Same objective on held-out-fold diseases; fixed seed so val is
-                        # comparable across epochs (for early stopping / selection).
-                        val_loss = sampled_softmax_loss(
-                            ss_pos_val, ranking_num_negatives, ranking_disease_batch,
-                            np.random.default_rng(train_seed), ranking_temperature)
-                    else:
-                        val_logits = model(gene_net_data, disease_net_data, val_x)
-                        val_loss = criterion(val_logits, val_y)
+                    val_loss = _val_loss()
                     
                 current_val_loss = val_loss.item()
                 losses['val'].append(current_val_loss)
