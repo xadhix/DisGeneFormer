@@ -118,9 +118,23 @@ def main(cfg):
     # DisGeNET score. Both target the near-constant collapse on the 0-heavy score.
     pos_weight = float(train_cfg.get('pos_weight', 1.0))
     target_transform = str(train_cfg.get('target_transform', 'none')).lower()
+    # --- sampled-softmax ranking objective (loss_fn: 'sampled_softmax') ---
+    # Ranks each disease's positives against a large candidate set (K sampled
+    # negatives, resampled every epoch), aligning TRAINING with the eval protocol
+    # (recall@K ranks ALL genes). ranking_num_negatives: int K, or 'full' (all
+    # non-positive genes). ranking_disease_batch: diseases scored per epoch (bounds
+    # head-activation memory); 'all' = every covered disease. ranking_temperature:
+    # softmax temperature on the raw head score.
+    _rnn = train_cfg.get('ranking_num_negatives', 512)
+    ranking_num_negatives = _rnn if (isinstance(_rnn, str) and _rnn == 'full') else int(_rnn)
+    _rdb = train_cfg.get('ranking_disease_batch', 'all')
+    ranking_disease_batch = _rdb if (isinstance(_rdb, str) and _rdb == 'all') else int(_rdb)
+    ranking_temperature = float(train_cfg.get('ranking_temperature', 1.0))
     if task == 'regression':
         print(f"[task] regression | loss={loss_fn_name} | "
-              f"target_transform={target_transform} | pos_weight={pos_weight}")
+              f"target_transform={target_transform} | pos_weight={pos_weight} | "
+              f"ranking_num_negatives={ranking_num_negatives} | "
+              f"ranking_disease_batch={ranking_disease_batch} | tau={ranking_temperature}")
 
 
     def weight_based_edge_pruning(data, removal_prob=0.01, perturb_setting='random'):
@@ -280,6 +294,13 @@ def main(cfg):
     print(f"all diseases: {len(covered_diseases)}")
     print(f"all positive associations: {len(positives)}")
 
+    # Precompute each disease's positive gene NODE indices (for the sampled-softmax
+    # ranking objective). disease_id -> np.int64 array of gene node indices.
+    pos_gene_idx_by_disease = {}
+    for _d_id, _sub in positives.groupby('disease_id')['EntrezGene ID']:
+        _gidx = sorted({gene_id_index_feature_mapping[int(_g)] for _g in _sub})
+        pos_gene_idx_by_disease[_d_id] = np.array(_gidx, dtype=np.int64)
+
     # Randomly generate negatives using diseases from positive data and genes from all genes
     def build_negatives_fast(positives_df, all_genes, rng=np.random.default_rng(train_seed)):
         """Return a DataFrame with exactly |positives_df| negatives."""
@@ -436,6 +457,56 @@ def main(cfg):
                 return ranking_loss(out, rank_groups)
             return criterion(out, targets)
 
+        # --- sampled-softmax ranking objective (opt-in via train.loss_fn: 'sampled_softmax') ---
+        # For each disease, rank its positives against K sampled negatives (resampled every
+        # epoch) via a listwise softmax: -mean_p log( exp(s_p/tau) / sum_c exp(s_c/tau) ).
+        # Aligns training with eval's recall@K (which ranks ALL genes). Scores come from one
+        # forward() over a constructed candidate batch; disease sub-batching bounds memory.
+        use_sampled_softmax = (task == 'regression' and loss_fn_name == 'sampled_softmax')
+        n_genes = gene_net_data.x.shape[0]
+
+        def pos_by_disease_for(disease_indexes):
+            """disease_node_idx -> np.int64 array of positive gene node indices, for a fold."""
+            out = {}
+            for di in disease_indexes:
+                d_id = covered_diseases[di]
+                gidx = pos_gene_idx_by_disease.get(d_id)
+                if gidx is not None and len(gidx):
+                    out[disease_id_index_feature_mapping[d_id]] = gidx
+            return out
+
+        def sampled_softmax_loss(pos_by_d, k, dis_batch, rng, tau):
+            items = list(pos_by_d.items())
+            if dis_batch != 'all' and len(items) > dis_batch:
+                sel = rng.choice(len(items), size=dis_batch, replace=False)
+                items = [items[i] for i in sel]
+            gene_rows, dis_rows, blocks, cursor = [], [], [], 0
+            for d_idx, pos_idx in items:
+                n_pos = len(pos_idx)
+                if k == 'full':
+                    mask = np.ones(n_genes, dtype=bool); mask[pos_idx] = False
+                    neg_idx = np.nonzero(mask)[0]
+                else:
+                    kk = min(int(k), n_genes - n_pos)
+                    cand = rng.choice(n_genes, size=min(n_genes, kk + n_pos + 32), replace=False)
+                    neg_idx = cand[~np.isin(cand, pos_idx)][:kk]
+                all_idx = np.concatenate([pos_idx, neg_idx])
+                gene_rows.append(all_idx)
+                dis_rows.append(np.full(len(all_idx), d_idx, dtype=np.int64))
+                blocks.append((cursor, n_pos, len(all_idx)))
+                cursor += len(all_idx)
+            batch_idx = torch.from_numpy(
+                np.stack([np.concatenate(gene_rows), np.concatenate(dis_rows)], axis=1)
+            ).to(device).long()
+            out = model(gene_net_data, disease_net_data, batch_idx)   # [M, out_dim]
+            scores = out.squeeze(-1) / tau
+            terms = []
+            for (start, n_pos, n_total) in blocks:
+                s = scores[start:start + n_total]
+                logZ = torch.logsumexp(s, dim=0)
+                terms.append(logZ - s[:n_pos].mean())   # -mean_p log softmax_p
+            return torch.stack(terms).mean()
+
         print(f"Start Training")
         best_global_val = 1e80
         best_global_state = None
@@ -459,6 +530,12 @@ def main(cfg):
 
             # Precompute per-disease pos/neg groupings for the ranking TRAINING objective.
             train_groups_rank = group_pos_neg(train_x, train_y) if use_ranking else None
+
+            # Per-disease positive gene indices for the sampled-softmax objective
+            # (train = training-fold diseases, val = held-out fold diseases).
+            if use_sampled_softmax:
+                ss_pos_train = pos_by_disease_for(train_index)
+                ss_pos_val = pos_by_disease_for(test_index)
 
             model = DisGeneFormer(
                 gene_feature_dim=gene_net_data.x.shape[1],
@@ -504,11 +581,16 @@ def main(cfg):
                 model.train()
                 optimizer.zero_grad()
 
-                # Use autocast to speed up 
+                # Use autocast to speed up
                 if use_autocast:
                     with autocast():
-                        out = model(gene_net_data, disease_net_data, train_x)
-                        loss = phased_loss(out, train_y, train_groups_rank)
+                        if use_sampled_softmax:
+                            loss = sampled_softmax_loss(
+                                ss_pos_train, ranking_num_negatives, ranking_disease_batch,
+                                np.random.default_rng(train_seed + epoch), ranking_temperature)
+                        else:
+                            out = model(gene_net_data, disease_net_data, train_x)
+                            loss = phased_loss(out, train_y, train_groups_rank)
                     scaler.scale(loss).backward()
                     if grad_clip > 0:
                         scaler.unscale_(optimizer)   # clip on real (unscaled) grads
@@ -516,20 +598,32 @@ def main(cfg):
                     scaler.step(optimizer)
                     scaler.update()
                 else:
-                    out = model(gene_net_data, disease_net_data, train_x)
-                    loss = phased_loss(out, train_y, train_groups_rank)
+                    if use_sampled_softmax:
+                        loss = sampled_softmax_loss(
+                            ss_pos_train, ranking_num_negatives, ranking_disease_batch,
+                            np.random.default_rng(train_seed + epoch), ranking_temperature)
+                    else:
+                        out = model(gene_net_data, disease_net_data, train_x)
+                        loss = phased_loss(out, train_y, train_groups_rank)
                     loss.backward()
                     if grad_clip > 0:
                         torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
                     optimizer.step()
-                    
+
                 losses['train'].append(loss.item())
 
                 # Validation.
                 model.eval()
                 with torch.no_grad(), autocast(enabled=use_autocast):
-                    val_logits = model(gene_net_data, disease_net_data, val_x)
-                    val_loss = criterion(val_logits, val_y)
+                    if use_sampled_softmax:
+                        # Same objective on held-out-fold diseases; fixed seed so val is
+                        # comparable across epochs (for early stopping / selection).
+                        val_loss = sampled_softmax_loss(
+                            ss_pos_val, ranking_num_negatives, ranking_disease_batch,
+                            np.random.default_rng(train_seed), ranking_temperature)
+                    else:
+                        val_logits = model(gene_net_data, disease_net_data, val_x)
+                        val_loss = criterion(val_logits, val_y)
                     
                 current_val_loss = val_loss.item()
                 losses['val'].append(current_val_loss)
