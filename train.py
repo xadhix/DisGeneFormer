@@ -133,6 +133,10 @@ def main(cfg):
     # loss_fn: 'combo' => smooth_l1(binary) + ranking_lambda * sampled_softmax, to keep a
     # calibrated score AND strong ranking. ranking_lambda weights the ranking term.
     ranking_lambda = float(train_cfg.get('ranking_lambda', 1.0))
+    # Full disease coverage for the ranking loss: process ALL training diseases every epoch in
+    # chunks of `ranking_disease_batch` with gradient accumulation (each chunk re-encodes the
+    # graph), so coverage is independent of K / batch (default off = sub-sampled behaviour).
+    ranking_full_coverage = bool(train_cfg.get('ranking_full_coverage', False))
     if task == 'regression':
         print(f"[task] regression | loss={loss_fn_name} | "
               f"target_transform={target_transform} | pos_weight={pos_weight} | "
@@ -467,6 +471,7 @@ def main(cfg):
         # forward() over a constructed candidate batch; disease sub-batching bounds memory.
         use_sampled_softmax = (task == 'regression' and loss_fn_name == 'sampled_softmax')
         use_combo = (task == 'regression' and loss_fn_name == 'combo')
+        use_chunked = use_sampled_softmax and ranking_full_coverage
         n_genes = gene_net_data.x.shape[0]
 
         def pos_by_disease_for(disease_indexes):
@@ -606,13 +611,47 @@ def main(cfg):
                     return base + ranking_lambda * ss
                 return base
 
+            def _train_step_chunked(epoch):
+                """Full-coverage ranking step: process ALL training diseases every epoch in chunks
+                of `ranking_disease_batch`, with gradient accumulation (each chunk re-encodes via
+                forward()). Peak memory = one chunk; coverage is independent of K/batch."""
+                optimizer.zero_grad()
+                items = list(ss_pos_train.items())
+                rng = np.random.default_rng(train_seed + epoch)
+                order = rng.permutation(len(items))
+                chunk = int(ranking_disease_batch) if ranking_disease_batch != 'all' else len(items)
+                chunk = max(1, chunk)
+                idx_chunks = [order[i:i + chunk] for i in range(0, len(order), chunk)]
+                nchunks = max(1, len(idx_chunks))
+                total = 0.0
+                for cidx in idx_chunks:
+                    sub = dict(items[int(j)] for j in cidx)
+                    with autocast(enabled=use_autocast):
+                        lc = sampled_softmax_loss(sub, ranking_num_negatives, 'all',
+                                                  rng, ranking_temperature) / nchunks
+                    if use_autocast:
+                        scaler.scale(lc).backward()
+                    else:
+                        lc.backward()
+                    total += lc.item()
+                if grad_clip > 0:
+                    if use_autocast:
+                        scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                if use_autocast:
+                    scaler.step(optimizer); scaler.update()
+                else:
+                    optimizer.step()
+                return total
+
             for epoch in range(max_epochs):
                 # Train model.
                 model.train()
-                optimizer.zero_grad()
 
-                # Use autocast to speed up
-                if use_autocast:
+                if use_chunked:
+                    train_loss_val = _train_step_chunked(epoch)
+                elif use_autocast:
+                    optimizer.zero_grad()
                     with autocast():
                         loss = _train_loss(epoch)
                     scaler.scale(loss).backward()
@@ -621,14 +660,17 @@ def main(cfg):
                         torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
                     scaler.step(optimizer)
                     scaler.update()
+                    train_loss_val = loss.item()
                 else:
+                    optimizer.zero_grad()
                     loss = _train_loss(epoch)
                     loss.backward()
                     if grad_clip > 0:
                         torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
                     optimizer.step()
+                    train_loss_val = loss.item()
 
-                losses['train'].append(loss.item())
+                losses['train'].append(train_loss_val)
 
                 # Validation (same objective on the disease-disjoint held-out fold; for
                 # sampled_softmax/combo the negatives use a fixed seed so val is comparable
