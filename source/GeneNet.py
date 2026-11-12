@@ -12,6 +12,7 @@ import os.path as osp
 from scipy.sparse import coo_matrix
 from sklearn.decomposition import TruncatedSVD
 from torch_geometric.data import InMemoryDataset, Data
+from torch_geometric.utils import to_undirected
 from tqdm import tqdm
 import ast
 import pandas as pd
@@ -75,6 +76,10 @@ class GeneNet(InMemoryDataset):
         self.train_negatives_path = cfg.gene_net.train_negatives_path
         self.all_associations_path = cfg.evaluation.all_disgenet_associations_path
         self.gda_edges = cfg.gene_net.gda_edges
+        # Symmetrise edges (default off = original behaviour). HumanNet is an undirected
+        # functional network but generate_edges adds only source->target; with this on,
+        # generate_data_object makes every edge bidirectional (full neighbourhood).
+        self.undirected_edges = cfg.gene_net.get('undirected_edges', False)
         self.test_path = cfg.evaluation.test_path
         super(GeneNet, self).__init__(self.root, transform, pre_transform)
         self.data, self.slices = torch.load(self.processed_paths[self.ProcessedFileEnum.data])
@@ -182,6 +187,9 @@ class GeneNet(InMemoryDataset):
     def generate_data_object(self):
         x = self.load_node_feature_martix()
         edge_index, edge_attr = self.load_edges()
+        if getattr(self, 'undirected_edges', False):
+            logging.info('Symmetrising gene edges (undirected_edges=True).')
+            edge_index, edge_attr = to_undirected(edge_index, edge_attr, reduce='mean')
         data_list = [
             Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
         ]

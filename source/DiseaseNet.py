@@ -15,7 +15,7 @@ from sklearn.decomposition import TruncatedSVD
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import MultiLabelBinarizer, normalize
 from torch_geometric.data import InMemoryDataset, Data
-from torch_geometric.utils import dense_to_sparse
+from torch_geometric.utils import dense_to_sparse, to_undirected
 from tqdm import tqdm
 
 from collections import defaultdict
@@ -83,6 +83,10 @@ class DiseaseNet(InMemoryDataset):
         self.train_positives_path = cfg.disease_net.train_positives_path
         self.train_negatives_path = cfg.disease_net.train_negatives_path
         self.gda_edges = cfg.disease_net.gda_edges
+        # Symmetrise edges (default off = original behaviour). feature_similarity kNN and
+        # 'databases' edges are asymmetric; with this on, generate_data_object makes every
+        # edge bidirectional.
+        self.undirected_edges = cfg.disease_net.get('undirected_edges', False)
         self.test_path = cfg.evaluation.test_path
         # Which disease-id prefixes to admit from all_diseases.tsv. Disease ids are
         # UMLS CUIs (prefix 'C'); [] / ['*'] admits every id.
@@ -175,6 +179,9 @@ class DiseaseNet(InMemoryDataset):
     def generate_data_object(self):
         x = self.load_node_feature_martix()
         edge_index, edge_attr = self.load_edges()
+        if getattr(self, 'undirected_edges', False):
+            logging.info('Symmetrising disease edges (undirected_edges=True).')
+            edge_index, edge_attr = to_undirected(edge_index, edge_attr, reduce='mean')
         data_list = [
             Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
         ]
