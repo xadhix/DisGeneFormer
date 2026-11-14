@@ -119,3 +119,13 @@ N sweep jobs run fully in parallel. `dgf_eval_diseases.slurm` additionally appen
 SLURM job id to its default experiment dir; its one shared mutable file,
 `data/eval_diseases.tsv`, is safe for identical lists but would race if two concurrent
 jobs rank **different** lists.
+
+### Small-GPU OOM on `gpu-single` (ranking losses)
+
+`sampled_softmax` / `combo` arms OOM when a job lands on a small-VRAM `m*`/`o*` node of
+`gpu-single` (an identical config succeeds on `p*` / A100 / H200), and login-node GPU
+introspection is locked down so you can't `--constraint` around it. Mitigation (GPU-agnostic):
+lower `train.ranking_disease_batch` (K=1024 → 384, K=4096 → 96, combo → 192) — completeness at a
+small coverage/recall cost. As of the 2026-11-14 Helix status audit, two full-`disease_batch`
+stage-1 arms (`A3_ssK1024_lr1e4`, `A4_ssK4096_lr1e4`) remain un-rerun on a large GPU. Full
+history: `syndata/DGF_EXPERIMENT_LOG.md` (stage-1/stage-2 ranking sweeps + the 2026-11-14 audit).
