@@ -197,7 +197,8 @@ def main():
     gene_idx_all = np.array([gene_id_to_idx[int(g)] for g in all_gene_ids], dtype=np.int64)
     per_disease = []
     recalls = {k: [] for k in ks}
-    rprec = []  # recall@TP (R-precision)
+    precisions = {k: [] for k in ks}
+    rprec = []  # recall@TP (R-precision) == precision@TP (the crossover point)
 
     scores_path = osp.join(exp, "all_gene_scores.tsv.gz")
     sfh = gzip.open(scores_path, "wt") if dump_scores else None
@@ -217,9 +218,13 @@ def main():
 
         row = {"disease": d, "n_positives": tp}
         for k in ks:
-            rec = int(np.sum(pos_ranks <= k)) / tp
+            hit = int(np.sum(pos_ranks <= k))
+            rec = hit / tp
+            prec = hit / k
             recalls[k].append(rec)
+            precisions[k].append(prec)
             row[f"recall@{k}"] = rec
+            row[f"precision@{k}"] = prec
         rtp = int(np.sum(pos_ranks <= tp)) / tp
         rprec.append(rtp)
         row["recall@TP"] = rtp
@@ -247,8 +252,8 @@ def main():
         f"MSE {mse:.5f}  MAE {mae:.5f}  R2 {r2:.5f}  "
         f"Pearson {pearson(pos_pred, pos_true):.5f}  Spearman {spearman(pos_pred, pos_true):.5f}",
         "--- ranking (mean over held-out diseases) ---",
-    ] + [f"recall@{k:<9}: {np.mean(recalls[k]):.4f}" for k in ks] + [
-        f"recall@TP (R-prec): {np.mean(rprec):.4f}",
+    ] + [f"recall@{k:<9}: {np.mean(recalls[k]):.4f}   precision@{k:<9}: {np.mean(precisions[k]):.4f}" for k in ks] + [
+        f"recall@TP (R-prec): {np.mean(rprec):.4f}   (= precision@TP)",
         "",
         f"per-disease (+ recall@TP, positive_ranks): {osp.basename(per_csv)}",
         f"full gene scores            : {osp.basename(scores_path) if dump_scores else '(skipped)'}",
